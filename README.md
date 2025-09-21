@@ -27,10 +27,6 @@ Run this weekly on production VMs. It reclaims disk space and removes caches wit
 .\Cleanup-WindowsVM-Weekly.ps1 -SkipBrowserCleanup
 ```
 
-## Why these replace Disk Cleanup
-
-The weekly script covers everything Disk Cleanup does and adds dev/container/app cache cleanup that Disk Cleanup misses. The template script goes further — it prepares a VM for sysprep and templating (including DISM `/ResetBase` and zeroing free space).
-
 
 
 ## Cleanup-WindowsVM-Template.ps1 (DESTRUCTIVE)
