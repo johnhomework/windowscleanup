@@ -2,28 +2,8 @@
 
 Two PowerShell scripts I use for Windows VMs — one to prep a template (destructive, one-time), and one safe weekly cleanup for running VMs.
 
-## Cleanup-WindowsVM-Template.ps1 — Template prep (DO NOT run on production)
 
-Use this once before sysprepping a VM. It nukes user-specific junk so the template is clean.
-
-### What it does
-- Clears all event logs
-- Removes user profiles, Documents and user data caches
-- Removes saved network profiles and cached credentials
-- Runs DISM `/ResetBase` (permanent — you can't uninstall old updates afterward)
-- Disables hibernation and sets sane VM power settings
-- Zeros free space for much better template compression
-
-### Run
-```powershell
-.\Cleanup-WindowsVM-Template.ps1
-# Dry-run:
-.\Cleanup-WindowsVM-Template.ps1 -WhatIf
-```
-
-**Warning:** destructive. Verify before running. Run once, then sysprep and capture the template.
-
-## Cleanup-WindowsVM-Weekly.ps1 — Safe weekly maintenance
+## Cleanup-WindowsVM-Weekly.ps1
 
 Run this weekly on production VMs. It reclaims disk space and removes caches without touching user data or event logs.
 
@@ -50,6 +30,29 @@ Run this weekly on production VMs. It reclaims disk space and removes caches wit
 ## Why these replace Disk Cleanup
 
 The weekly script covers everything Disk Cleanup does and adds dev/container/app cache cleanup that Disk Cleanup misses. The template script goes further — it prepares a VM for sysprep and templating (including DISM `/ResetBase` and zeroing free space).
+
+
+
+## Cleanup-WindowsVM-Template.ps1 (DESTRUCTIVE)
+
+Use this once before sysprepping a VM. It nukes user-specific junk so the template is clean.
+
+### What it does
+- Clears all event logs
+- Removes user profiles, Documents and user data caches
+- Removes saved network profiles and cached credentials
+- Runs DISM `/ResetBase` (permanent — you can't uninstall old updates afterward)
+- Disables hibernation and sets sane VM power settings
+- Zeros free space for much better template compression
+
+### Run
+```powershell
+.\Cleanup-WindowsVM-Template.ps1
+# Dry-run:
+.\Cleanup-WindowsVM-Template.ps1 -WhatIf
+```
+
+**Warning:** Destructive. Verify before running. Run once, then sysprep and capture the template.
 
 ## Requirements & notes
 
