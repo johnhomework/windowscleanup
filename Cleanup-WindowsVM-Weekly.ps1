@@ -1,6 +1,5 @@
-﻿# Windows VM Weekly Maintenance Script
+# Windows VM Weekly Maintenance Script
 # Safe for regular production VM cleanup - focuses on disk space recovery
-# Avoids system-critical items like event logs and user profile data
 
 #Requires -RunAsAdministrator
 
@@ -14,6 +13,24 @@ Write-Host "=====================================" -ForegroundColor Green
 
 if ($WhatIf) {
     Write-Host "Running in WhatIf mode - no files will be deleted" -ForegroundColor Yellow
+}
+
+# Get initial disk space
+try {
+    $initialDisk = Get-WmiObject -Class Win32_LogicalDisk -Filter "DeviceID='C:'"
+    $initialFreeSpaceGB = [math]::Round($initialDisk.FreeSpace / 1GB, 2)
+    $totalSpaceGB = [math]::Round($initialDisk.Size / 1GB, 2)
+    $initialUsedSpaceGB = $totalSpaceGB - $initialFreeSpaceGB
+    $initialUsedPercent = [math]::Round(($initialUsedSpaceGB / $totalSpaceGB) * 100, 1)
+    
+    Write-Host "`nInitial Disk Space:" -ForegroundColor Yellow
+    Write-Host "Total: $totalSpaceGB GB" -ForegroundColor White
+    Write-Host "Used:  $initialUsedSpaceGB GB ($initialUsedPercent%)" -ForegroundColor White  
+    Write-Host "Free:  $initialFreeSpaceGB GB" -ForegroundColor White
+}
+catch {
+    Write-Host "`nCould not determine initial disk space" -ForegroundColor Yellow
+    $initialFreeSpaceGB = 0
 }
 
 # Function to safely remove files/folders
@@ -32,13 +49,13 @@ function Remove-SafelyWithLogging {
             
             if (-not $WhatIf) {
                 Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Host "  ✓ Removed" -ForegroundColor Green
+                Write-Host "  V Removed" -ForegroundColor Green
             } else {
-                Write-Host "  → Would remove $sizeGB GB" -ForegroundColor Yellow
+                Write-Host "  -> Would remove $sizeGB GB" -ForegroundColor Yellow
             }
         }
         catch {
-            Write-Host "  ✗ Error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  X Error: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
     else {
@@ -178,7 +195,7 @@ foreach ($webPath in $webServerPaths) {
     Remove-SafelyWithLogging -Path $webPath.Path -Description $webPath.Desc
 }
 
-Write-Host "`n10. Docker and Container Cache (if present)..." -ForegroundColor Yellow
+Write-Host "`n10. Docker and Container Cache..." -ForegroundColor Yellow
 $containerPaths = @(
     @{Path="C:\ProgramData\Docker\tmp\*"; Desc="Docker Temp Files"},
     @{Path="C:\Users\*\.docker\machine\cache\*"; Desc="Docker Machine Cache"},
@@ -192,10 +209,8 @@ foreach ($containerPath in $containerPaths) {
 Write-Host "`n11. Windows Disk Cleanup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        # Use built-in PowerShell cmdlets instead of cleanmgr.exe to avoid GUI issues
         Write-Host "  Running automated disk cleanup..." -ForegroundColor Cyan
         
-        # Clear additional temp locations that cleanmgr would handle
         $additionalPaths = @(
             @{Path="C:\Windows\Downloaded Program Files\*"; Desc="Downloaded Program Files"},
             @{Path="C:\Windows\Offline Web Pages\*"; Desc="Offline Web Pages"},
@@ -209,94 +224,115 @@ if (-not $WhatIf) {
             Remove-SafelyWithLogging -Path $additionalPath.Path -Description $additionalPath.Desc
         }
         
-        Write-Host "  ✓ Disk cleanup completed (automated method)" -ForegroundColor Green
+        Write-Host "  V Disk cleanup completed" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Disk cleanup failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would run automated disk cleanup (no GUI)" -ForegroundColor Yellow
+    Write-Host "  -> Would run automated disk cleanup" -ForegroundColor Yellow
 }
 
 Write-Host "`n12. Empty Recycle Bin..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         Clear-RecycleBin -Force -ErrorAction Stop
-        Write-Host "  ✓ Recycle Bin emptied" -ForegroundColor Green
+        Write-Host "  V Recycle Bin emptied" -ForegroundColor Green
     }
     catch {
         try {
             $recycleBin = New-Object -ComObject Shell.Application
             $recycleBin.Namespace(0xA).InvokeVerb("empty")
-            Write-Host "  ✓ Recycle Bin emptied" -ForegroundColor Green
+            Write-Host "  V Recycle Bin emptied" -ForegroundColor Green
         }
         catch {
             Write-Host "  Warning: Could not empty Recycle Bin" -ForegroundColor Yellow
         }
     }
 } else {
-    Write-Host "  → Would empty Recycle Bin" -ForegroundColor Yellow
+    Write-Host "  -> Would empty Recycle Bin" -ForegroundColor Yellow
 }
 
-Write-Host "`n13. DISM Component Cleanup (Safe Mode)..." -ForegroundColor Yellow
+Write-Host "`n13. DISM Component Cleanup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        Write-Host "  Running DISM component cleanup (safe mode - no ResetBase)..." -ForegroundColor Cyan
+        Write-Host "  Running DISM component cleanup (this may take 5-15 minutes)..." -ForegroundColor Cyan
+        Write-Host "  Please wait, DISM is working in background..." -ForegroundColor Gray
         
-        # Run DISM cleanup WITHOUT ResetBase (keeps ability to uninstall updates)
-        $dismResult = Start-Process "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup" -Wait -PassThru -WindowStyle Hidden
+        # Start DISM with a timeout
+        $dismJob = Start-Job -ScriptBlock {
+            $dismResult = Start-Process "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup" -Wait -PassThru -WindowStyle Hidden
+            return $dismResult.ExitCode
+        }
         
-        if ($dismResult.ExitCode -eq 0) {
-            Write-Host "  ✓ DISM component cleanup completed" -ForegroundColor Green
+        # Wait with progress indicator (max 20 minutes)
+        $timeout = 1200 # 20 minutes in seconds
+        $elapsed = 0
+        
+        while ($dismJob.State -eq "Running" -and $elapsed -lt $timeout) {
+            Start-Sleep 30
+            $elapsed += 30
+            $minutes = [math]::Floor($elapsed / 60)
+            Write-Host "  Still running... ($minutes minutes elapsed)" -ForegroundColor Gray
+        }
+        
+        if ($dismJob.State -eq "Running") {
+            Write-Host "  DISM taking too long, stopping..." -ForegroundColor Yellow
+            Stop-Job $dismJob
+            Remove-Job $dismJob
+            Write-Host "  Warning: DISM cleanup timed out after 20 minutes" -ForegroundColor Yellow
         } else {
-            Write-Host "  Warning: DISM cleanup failed with exit code $($dismResult.ExitCode)" -ForegroundColor Yellow
+            $exitCode = Receive-Job $dismJob
+            Remove-Job $dismJob
+            
+            if ($exitCode -eq 0) {
+                Write-Host "  V DISM component cleanup completed" -ForegroundColor Green
+            } else {
+                Write-Host "  Warning: DISM cleanup failed with exit code $exitCode" -ForegroundColor Yellow
+            }
         }
     }
     catch {
         Write-Host "  Error: DISM cleanup failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 } else {
-    Write-Host "  → Would run DISM component cleanup (safe mode)" -ForegroundColor Yellow
+    Write-Host "  -> Would run DISM component cleanup (can take 5-15 minutes)" -ForegroundColor Yellow
 }
 
 Write-Host "`n14. Disk Optimization..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        # Get all drives for optimization
         $drives = Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq "Fixed" }
         
         foreach ($drive in $drives) {
             Write-Host "  Running TRIM on drive $($drive.DriveLetter):\ ..." -ForegroundColor Cyan
             Optimize-Volume -DriveLetter $drive.DriveLetter -ReTrim -Verbose
-            Write-Host "  ✓ TRIM completed for drive $($drive.DriveLetter):\" -ForegroundColor Green
+            Write-Host "  V TRIM completed for drive $($drive.DriveLetter):\" -ForegroundColor Green
         }
     }
     catch {
         Write-Host "  Warning: Disk optimization failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would run TRIM on all fixed drives" -ForegroundColor Yellow
+    Write-Host "  -> Would run TRIM on all fixed drives" -ForegroundColor Yellow
 }
 
 Write-Host "`n15. Network Cache Cleanup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        # Clear DNS cache
         ipconfig /flushdns | Out-Null
-        Write-Host "  ✓ DNS cache cleared" -ForegroundColor Green
+        Write-Host "  V DNS cache cleared" -ForegroundColor Green
         
-        # Clear ARP cache  
         arp -d * 2>$null
-        Write-Host "  ✓ ARP cache cleared" -ForegroundColor Green
+        Write-Host "  V ARP cache cleared" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Network cache cleanup failed" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would clear DNS and ARP cache" -ForegroundColor Yellow
+    Write-Host "  -> Would clear DNS and ARP cache" -ForegroundColor Yellow
 }
 
-# Restart stopped services
 Write-Host "`n16. Restarting Services..." -ForegroundColor Yellow
 foreach ($service in $servicesToStop) {
     try {
@@ -311,21 +347,30 @@ foreach ($service in $servicesToStop) {
 Write-Host "`n=====================================" -ForegroundColor Green
 Write-Host "Weekly VM Maintenance Complete!" -ForegroundColor Green
 
-# Show disk space summary
+# Show final disk space and calculate difference
 try {
-    $disk = Get-WmiObject -Class Win32_LogicalDisk -Filter "DeviceID='C:'"
-    $freeSpaceGB = [math]::Round($disk.FreeSpace / 1GB, 2)
-    $totalSpaceGB = [math]::Round($disk.Size / 1GB, 2)
-    $usedSpaceGB = $totalSpaceGB - $freeSpaceGB
-    $usedPercent = [math]::Round(($usedSpaceGB / $totalSpaceGB) * 100, 1)
+    $finalDisk = Get-WmiObject -Class Win32_LogicalDisk -Filter "DeviceID='C:'"
+    $finalFreeSpaceGB = [math]::Round($finalDisk.FreeSpace / 1GB, 2)
+    $finalUsedSpaceGB = $totalSpaceGB - $finalFreeSpaceGB
+    $finalUsedPercent = [math]::Round(($finalUsedSpaceGB / $totalSpaceGB) * 100, 1)
     
-    Write-Host "`nDisk Space Summary:" -ForegroundColor Yellow
+    $spaceFreeGB = [math]::Round($finalFreeSpaceGB - $initialFreeSpaceGB, 2)
+    
+    Write-Host "`nFinal Disk Space:" -ForegroundColor Yellow
     Write-Host "Total: $totalSpaceGB GB" -ForegroundColor White
-    Write-Host "Used:  $usedSpaceGB GB ($usedPercent%)" -ForegroundColor White  
-    Write-Host "Free:  $freeSpaceGB GB" -ForegroundColor Green
+    Write-Host "Used:  $finalUsedSpaceGB GB ($finalUsedPercent%)" -ForegroundColor White  
+    Write-Host "Free:  $finalFreeSpaceGB GB" -ForegroundColor Green
+    
+    if ($spaceFreeGB -gt 0) {
+        Write-Host "`nSpace Reclaimed: $spaceFreeGB GB" -ForegroundColor Green
+    } elseif ($spaceFreeGB -eq 0) {
+        Write-Host "`nSpace Reclaimed: No change" -ForegroundColor Yellow
+    } else {
+        Write-Host "`nSpace Change: $spaceFreeGB GB (disk usage increased)" -ForegroundColor Red
+    }
 }
 catch {
-    Write-Host "`nCould not determine disk space" -ForegroundColor Yellow
+    Write-Host "`nCould not determine final disk space" -ForegroundColor Yellow
 }
 
-Write-Host "`nWeekly cleanup safe for production VMs ✓" -ForegroundColor Green
+Write-Host "`nWeekly cleanup safe for production VMs" -ForegroundColor Green
