@@ -344,6 +344,79 @@ foreach ($service in $servicesToStop) {
     }
 }
 
+Write-Host "`n17. Custom Application Log Cleanup..." -ForegroundColor Yellow
+Write-Host "  Add your application-specific log cleanup below" -ForegroundColor Gray
+
+# ============================================================================
+# CUSTOM APPLICATION LOG CLEANUP SECTION
+# ============================================================================
+# Add entries below to clean up logs from your specific applications.
+# Each entry should follow this format:
+#
+# @{Path="C:\Path\To\Your\Logs\*"; Desc="Your Application Logs"}
+#
+# The asterisk (*) at the end will delete all files in that directory.
+# You can also use wildcards like *.log to target specific file types.
+# 
+# EXAMPLE CONFIGURATIONS:
+# ============================================================================
+
+$customLogPaths = @(
+    # Example: Lucee/Tomcat application logs
+    # Uncomment the line below to enable Lucee log cleanup
+    # @{Path="C:\lucee\tomcat\logs\*"; Desc="Lucee Tomcat Logs"}
+    
+    # Example: IIS logs older than 30 days
+    # @{Path="C:\inetpub\logs\LogFiles\*\*.log"; Desc="IIS Logs"}
+    
+    # Example: Custom application logs
+    # @{Path="C:\MyApp\logs\*.log"; Desc="MyApp Logs"}
+    # @{Path="C:\Program Files\MyService\logs\*"; Desc="MyService Logs"}
+    
+    # Example: SQL Server error logs (be careful with these!)
+    # @{Path="C:\Program Files\Microsoft SQL Server\MSSQL*\MSSQL\Log\ERRORLOG.*"; Desc="SQL Server Error Logs (old)"}
+    
+    # Add your custom paths here:
+)
+
+# Process custom log cleanup if any paths are defined
+if ($customLogPaths.Count -gt 0) {
+    foreach ($customLog in $customLogPaths) {
+        Remove-SafelyWithLogging -Path $customLog.Path -Description $customLog.Desc
+    }
+} else {
+    Write-Host "  No custom log paths configured (edit script to add your paths)" -ForegroundColor Gray
+}
+
+# ============================================================================
+# ADVANCED: Time-based log cleanup
+# ============================================================================
+# For more precise control, you can add age-based cleanup using Get-ChildItem filtering.
+# Example: Delete Lucee logs older than 30 days
+# 
+# if (Test-Path "C:\lucee\tomcat\logs") {
+#     try {
+#         $cutoffDate = (Get-Date).AddDays(-30)
+#         $oldLogs = Get-ChildItem "C:\lucee\tomcat\logs\*.log" -Recurse -ErrorAction SilentlyContinue | 
+#                    Where-Object { $_.LastWriteTime -lt $cutoffDate }
+#         
+#         $size = ($oldLogs | Measure-Object -Property Length -Sum).Sum
+#         $sizeGB = [math]::Round($size / 1GB, 2)
+#         
+#         Write-Host "Cleaning: Lucee Logs (>30 days old, $sizeGB GB)" -ForegroundColor Cyan
+#         
+#         if (-not $WhatIf) {
+#             $oldLogs | Remove-Item -Force -ErrorAction SilentlyContinue
+#             Write-Host "  V Removed $($oldLogs.Count) files" -ForegroundColor Green
+#         } else {
+#             Write-Host "  -> Would remove $($oldLogs.Count) files ($sizeGB GB)" -ForegroundColor Yellow
+#         }
+#     }
+#     catch {
+#         Write-Host "  X Error cleaning Lucee logs: $($_.Exception.Message)" -ForegroundColor Red
+#     }
+# }
+
 Write-Host "`n=====================================" -ForegroundColor Green
 Write-Host "Weekly VM Maintenance Complete!" -ForegroundColor Green
 
