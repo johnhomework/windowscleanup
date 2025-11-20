@@ -74,13 +74,13 @@ function Remove-SafelyWithLogging {
             
             if (-not $WhatIf) {
                 Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Host "  ✓ Removed" -ForegroundColor Green
+                Write-Host "  [OK] Removed" -ForegroundColor Green
             } else {
-                Write-Host "  → Would remove $sizeGB GB" -ForegroundColor Yellow
+                Write-Host "  -> Would remove $sizeGB GB" -ForegroundColor Yellow
             }
         }
         catch {
-            Write-Host "  ✗ Error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  [X] Error: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
     else {
@@ -196,13 +196,13 @@ if (-not $SkipDriverCleanup) {
             
             Write-Host "  Found $($oldDrivers.Count) driver packages in store" -ForegroundColor Cyan
             Write-Host "  Use 'pnputil /delete-driver oem#.inf /uninstall' to remove specific old drivers" -ForegroundColor Gray
-            Write-Host "  ✓ Driver enumeration complete (manual cleanup recommended)" -ForegroundColor Green
+            Write-Host "  [OK] Driver enumeration complete (manual cleanup recommended)" -ForegroundColor Green
         }
         catch {
             Write-Host "  Warning: Could not enumerate drivers" -ForegroundColor Yellow
         }
     } else {
-        Write-Host "  → Would enumerate and suggest driver cleanup" -ForegroundColor Yellow
+        Write-Host "  -> Would enumerate and suggest driver cleanup" -ForegroundColor Yellow
     }
     
     # Clean driver temp files
@@ -237,13 +237,13 @@ if (-not $WhatIf) {
                 # Silent fail for logs that can't be cleared
             }
         }
-        Write-Host "  ✓ Cleared $clearedCount event logs" -ForegroundColor Green
+        Write-Host "  [OK] Cleared $clearedCount event logs" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Could not clear all event logs" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would clear all event logs" -ForegroundColor Yellow
+    Write-Host "  -> Would clear all event logs" -ForegroundColor Yellow
 }
 Write-Host ""
 
@@ -253,13 +253,13 @@ if (-not $WhatIf) {
         Stop-Service "WSearch" -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         Remove-SafelyWithLogging -Path "C:\ProgramData\Microsoft\Search\Data\*" -Description "Search Index Data"
-        Write-Host "  ✓ Search service stopped and index cleared" -ForegroundColor Green
+        Write-Host "  [OK] Search service stopped and index cleared" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Could not clear search index" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would stop search and clear index" -ForegroundColor Yellow
+    Write-Host "  -> Would stop search and clear index" -ForegroundColor Yellow
 }
 Write-Host ""
 
@@ -267,17 +267,55 @@ Write-Host "11. Recycle Bin (All Users)..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         Clear-RecycleBin -Force -ErrorAction Stop
-        Write-Host "  ✓ All recycle bins emptied" -ForegroundColor Green
+        Write-Host "  [OK] All recycle bins emptied" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Could not empty all recycle bins" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would empty all recycle bins" -ForegroundColor Yellow
+    Write-Host "  -> Would empty all recycle bins" -ForegroundColor Yellow
 }
 Write-Host ""
 
-Write-Host "12. DISM - Remove Superseded Components..." -ForegroundColor Yellow
+Write-Host "12. DISM - Analyze Component Store (WinSxS)..." -ForegroundColor Yellow
+try {
+    Write-Host "  Analyzing component store size..." -ForegroundColor Cyan
+    
+    # Run DISM and capture output
+    $analysisOutput = & dism.exe /online /Cleanup-Image /AnalyzeComponentStore 2>&1
+    
+    # Display the full output
+    foreach ($line in $analysisOutput) {
+        if ($line -match "Component Store|Windows Explorer|Reclaimable|Backup|Last Cleanup|recommended") {
+            Write-Host "  $line" -ForegroundColor White
+        }
+    }
+    
+    # Check if analysis succeeded
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  [OK] Component store analysis complete" -ForegroundColor Green
+        
+        # Extract key information
+        $sizeLine = $analysisOutput | Where-Object { $_ -match "Actual Size of Component Store" }
+        $reclaimLine = $analysisOutput | Where-Object { $_ -match "Component Store Cleanup Recommended" }
+        
+        if ($reclaimLine -match "Yes") {
+            Write-Host "  NOTE: Cleanup is recommended - space can be reclaimed!" -ForegroundColor Yellow
+        } elseif ($reclaimLine -match "No") {
+            Write-Host "  NOTE: Minimal space can be reclaimed (component store is already clean)" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "  Warning: DISM analysis returned error code $LASTEXITCODE" -ForegroundColor Yellow
+        Write-Host "  Try running script as Administrator" -ForegroundColor Yellow
+    }
+}
+catch {
+    Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  Make sure you're running as Administrator" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "13. DISM - Remove Superseded Components..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         Write-Host "  Running DISM with /ResetBase (THIS CANNOT BE UNDONE!)" -ForegroundColor Cyan
@@ -296,7 +334,7 @@ if (-not $WhatIf) {
             Start-Sleep 30
             $elapsed += 30
             $minutes = [math]::Floor($elapsed / 60)
-            Write-Host "  Still running... ($minutes minutes elapsed)" -ForegroundColor Gray
+            Write-Host "  Still running... (elapsed time: $minutes min)" -ForegroundColor Gray
         }
         
         if ($dismJob.State -eq "Running") {
@@ -309,7 +347,7 @@ if (-not $WhatIf) {
             Remove-Job $dismJob
             
             if ($exitCode -eq 0) {
-                Write-Host "  ✓ DISM /ResetBase completed successfully" -ForegroundColor Green
+                Write-Host "  [OK] DISM /ResetBase completed successfully" -ForegroundColor Green
                 Write-Host "  Note: Windows Update rollback is now disabled!" -ForegroundColor Yellow
             } else {
                 Write-Host "  Warning: DISM failed with exit code $exitCode" -ForegroundColor Yellow
@@ -320,40 +358,34 @@ if (-not $WhatIf) {
         Write-Host "  Error: DISM cleanup failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 } else {
-    Write-Host "  → Would run DISM /StartComponentCleanup /ResetBase" -ForegroundColor Yellow
-    Write-Host "  → This removes ALL superseded components permanently" -ForegroundColor Yellow
+    Write-Host "  -> Would run DISM /StartComponentCleanup /ResetBase" -ForegroundColor Yellow
+    Write-Host "  -> This removes ALL superseded components permanently" -ForegroundColor Yellow
+    Write-Host "  -> Expected to reclaim space shown in analysis above" -ForegroundColor Yellow
 }
 Write-Host ""
 
-Write-Host "13. DISM - Analyze Component Store (WinSxS)..." -ForegroundColor Yellow
+Write-Host "14. DISM - Remove Service Pack Backup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        Write-Host "  Analyzing component store size..." -ForegroundColor Cyan
-        $analysis = dism /online /Cleanup-Image /AnalyzeComponentStore
+        Write-Host "  Running DISM /SPSuperseded (removes SP backup)..." -ForegroundColor Cyan
+        $spResult = dism /online /Cleanup-Image /SPSuperseded
         
-        # Parse the output for key metrics
-        $componentSize = ($analysis | Select-String "Component Store \(WinSxS\) size").ToString()
-        $reclaimable = ($analysis | Select-String "Reclaimable Packages").ToString()
-        
-        if ($componentSize) {
-            Write-Host "  $componentSize" -ForegroundColor White
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [OK] Service pack backup removed" -ForegroundColor Green
+        } else {
+            Write-Host "  Note: No service pack backup found or already removed" -ForegroundColor Gray
         }
-        if ($reclaimable) {
-            Write-Host "  $reclaimable" -ForegroundColor White
-        }
-        
-        Write-Host "  ✓ Component store analysis complete" -ForegroundColor Green
     }
     catch {
-        Write-Host "  Warning: Could not analyze component store" -ForegroundColor Yellow
+        Write-Host "  Warning: SP cleanup not applicable" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would analyze component store size" -ForegroundColor Yellow
+    Write-Host "  -> Would remove service pack backup files if present" -ForegroundColor Yellow
 }
 Write-Host ""
 
 if (-not $SkipFeatureCleanup) {
-    Write-Host "14. Windows Features Cleanup..." -ForegroundColor Yellow
+    Write-Host "15. Windows Features Cleanup..." -ForegroundColor Yellow
     if (-not $WhatIf) {
         try {
             Write-Host "  Running feature cleanup to remove disabled features..." -ForegroundColor Cyan
@@ -368,19 +400,19 @@ if (-not $SkipFeatureCleanup) {
             Remove-Job $featureCleanup
             
             if ($exitCode -eq 0) {
-                Write-Host "  ✓ Feature cleanup completed" -ForegroundColor Green
+                Write-Host "  [OK] Feature cleanup completed" -ForegroundColor Green
             }
         }
         catch {
             Write-Host "  Warning: Feature cleanup failed" -ForegroundColor Yellow
         }
     } else {
-        Write-Host "  → Would run Windows Features cleanup" -ForegroundColor Yellow
+        Write-Host "  -> Would run Windows Features cleanup" -ForegroundColor Yellow
     }
     Write-Host ""
 }
 
-Write-Host "15. Service Pack Cleanup Files..." -ForegroundColor Yellow
+Write-Host "16. Service Pack Cleanup Files..." -ForegroundColor Yellow
 $spPaths = @(
     @{Path="C:\Windows\WinSxS\Backup\*"; Desc="WinSxS Backup Files"},
     @{Path="C:\Windows\WinSxS\ManifestCache\*"; Desc="Manifest Cache"},
@@ -392,27 +424,27 @@ foreach ($spPath in $spPaths) {
 }
 Write-Host ""
 
-Write-Host "16. System Restore Points Cleanup..." -ForegroundColor Yellow
+Write-Host "17. System Restore Points Cleanup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         vssadmin delete shadows /all /quiet 2>$null
-        Write-Host "  ✓ All system restore points deleted" -ForegroundColor Green
+        Write-Host "  [OK] All system restore points deleted" -ForegroundColor Green
         Write-Host "  Warning: System cannot be restored to previous state!" -ForegroundColor Yellow
     }
     catch {
         Write-Host "  Warning: Could not delete restore points" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would delete all system restore points" -ForegroundColor Yellow
+    Write-Host "  -> Would delete all system restore points" -ForegroundColor Yellow
 }
 Write-Host ""
 
-Write-Host "17. Page File and Hibernation..." -ForegroundColor Yellow
+Write-Host "18. Page File and Hibernation..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         # Disable hibernation (removes hiberfil.sys)
         powercfg /hibernate off
-        Write-Host "  ✓ Hibernation disabled (hiberfil.sys will be removed on reboot)" -ForegroundColor Green
+        Write-Host "  [OK] Hibernation disabled (hiberfil.sys will be removed on reboot)" -ForegroundColor Green
         
         # Note: We don't delete pagefile as it's recreated automatically
         Write-Host "  Note: Pagefile will be optimized on next boot" -ForegroundColor Gray
@@ -421,11 +453,11 @@ if (-not $WhatIf) {
         Write-Host "  Warning: Could not configure hibernation/pagefile" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would disable hibernation" -ForegroundColor Yellow
+    Write-Host "  -> Would disable hibernation" -ForegroundColor Yellow
 }
 Write-Host ""
 
-Write-Host "18. Optimize Drives and Compact OS..." -ForegroundColor Yellow
+Write-Host "19. Optimize Drives and Compact OS..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         # Run TRIM on all drives
@@ -434,7 +466,7 @@ if (-not $WhatIf) {
             Write-Host "  Running TRIM on drive $($drive.DriveLetter):\ ..." -ForegroundColor Cyan
             Optimize-Volume -DriveLetter $drive.DriveLetter -ReTrim -Verbose
         }
-        Write-Host "  ✓ TRIM completed on all drives" -ForegroundColor Green
+        Write-Host "  [OK] TRIM completed on all drives" -ForegroundColor Green
         
         # Compact OS (compresses Windows files)
         Write-Host "  Running Compact OS analysis..." -ForegroundColor Cyan
@@ -443,7 +475,7 @@ if (-not $WhatIf) {
         if ($compactStatus -like "*not in compact mode*") {
             Write-Host "  Applying Compact OS (this may take 10-20 minutes)..." -ForegroundColor Cyan
             compact /CompactOS:always | Out-Null
-            Write-Host "  ✓ Compact OS enabled - Windows files compressed" -ForegroundColor Green
+            Write-Host "  [OK] Compact OS enabled - Windows files compressed" -ForegroundColor Green
         } else {
             Write-Host "  Compact OS already enabled" -ForegroundColor Gray
         }
@@ -452,27 +484,27 @@ if (-not $WhatIf) {
         Write-Host "  Warning: Drive optimization failed" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would run TRIM and enable Compact OS" -ForegroundColor Yellow
+    Write-Host "  -> Would run TRIM and enable Compact OS" -ForegroundColor Yellow
 }
 Write-Host ""
 
-Write-Host "19. Clear DNS and Network Cache..." -ForegroundColor Yellow
+Write-Host "20. Clear DNS and Network Cache..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         ipconfig /flushdns | Out-Null
         arp -d * 2>$null
         netsh int ip reset | Out-Null
-        Write-Host "  ✓ Network caches cleared" -ForegroundColor Green
+        Write-Host "  [OK] Network caches cleared" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Network cache cleanup failed" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  → Would clear DNS and network cache" -ForegroundColor Yellow
+    Write-Host "  -> Would clear DNS and network cache" -ForegroundColor Yellow
 }
 Write-Host ""
 
-Write-Host "20. Zero Free Space (Optional - for maximum compression)..." -ForegroundColor Yellow
+Write-Host "21. Zero Free Space (Optional - for maximum compression)..." -ForegroundColor Yellow
 $zeroSpace = Read-Host "  Zero free space for better compression? This takes a LONG time (y/N)"
 if ($zeroSpace -eq "y" -and -not $WhatIf) {
     try {
@@ -482,7 +514,7 @@ if ($zeroSpace -eq "y" -and -not $WhatIf) {
         fsutil file createnew C:\zerofill.tmp (Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'").FreeSpace
         Remove-Item C:\zerofill.tmp -Force
         
-        Write-Host "  ✓ Free space zeroed" -ForegroundColor Green
+        Write-Host "  [OK] Free space zeroed" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Could not zero free space" -ForegroundColor Yellow
@@ -493,7 +525,7 @@ if ($zeroSpace -eq "y" -and -not $WhatIf) {
 }
 Write-Host ""
 
-Write-Host "21. Final Service Restart..." -ForegroundColor Yellow
+Write-Host "22. Final Service Restart..." -ForegroundColor Yellow
 $servicesToRestart = @("wuauserv")
 foreach ($service in $servicesToRestart) {
     try {
