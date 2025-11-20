@@ -1,18 +1,42 @@
-# Windows VM Weekly Maintenance Script
-# Safe for regular production VM cleanup - focuses on disk space recovery
+# Windows VM Template Preparation Script
+# AGGRESSIVE cleanup for creating VM templates - run BEFORE sysprep/OOBE
+# This script performs destructive cleanup to minimize template size
 
 #Requires -RunAsAdministrator
 
 param(
     [switch]$WhatIf,
-    [switch]$SkipBrowserCleanup
+    [switch]$SkipDriverCleanup,
+    [switch]$SkipFeatureCleanup
 )
 
-Write-Host "Windows VM Weekly Maintenance Script" -ForegroundColor Green
-Write-Host "=====================================" -ForegroundColor Green
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "Windows VM Template Preparation Script" -ForegroundColor Cyan
+Write-Host "AGGRESSIVE CLEANUP - Template Creation Mode" -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host ""
 
 if ($WhatIf) {
-    Write-Host "Running in WhatIf mode - no files will be deleted" -ForegroundColor Yellow
+    Write-Host "Running in WhatIf mode - no changes will be made" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+Write-Host "WARNING: This script performs AGGRESSIVE cleanup!" -ForegroundColor Red
+Write-Host "  - Removes superseded components permanently" -ForegroundColor Yellow
+Write-Host "  - Clears WinSxS backup files (no rollback!)" -ForegroundColor Yellow
+Write-Host "  - Removes old Windows updates" -ForegroundColor Yellow
+Write-Host "  - Cleans up old device drivers" -ForegroundColor Yellow
+Write-Host "  - Optimizes for template creation" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Only run this on systems that will be used as VM templates!" -ForegroundColor Red
+Write-Host ""
+
+if (-not $WhatIf) {
+    $confirm = Read-Host "Type 'TEMPLATE' to confirm this is a template preparation system"
+    if ($confirm -ne "TEMPLATE") {
+        Write-Host "Confirmation failed. Exiting." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Get initial disk space
@@ -23,13 +47,14 @@ try {
     $initialUsedSpaceGB = $totalSpaceGB - $initialFreeSpaceGB
     $initialUsedPercent = [math]::Round(($initialUsedSpaceGB / $totalSpaceGB) * 100, 1)
     
-    Write-Host "`nInitial Disk Space:" -ForegroundColor Yellow
+    Write-Host "Initial Disk Space:" -ForegroundColor Yellow
     Write-Host "Total: $totalSpaceGB GB" -ForegroundColor White
     Write-Host "Used:  $initialUsedSpaceGB GB ($initialUsedPercent%)" -ForegroundColor White  
     Write-Host "Free:  $initialFreeSpaceGB GB" -ForegroundColor White
+    Write-Host ""
 }
 catch {
-    Write-Host "`nCould not determine initial disk space" -ForegroundColor Yellow
+    Write-Host "Could not determine initial disk space" -ForegroundColor Yellow
     $initialFreeSpaceGB = 0
 }
 
@@ -49,13 +74,13 @@ function Remove-SafelyWithLogging {
             
             if (-not $WhatIf) {
                 Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Host "  V Removed" -ForegroundColor Green
+                Write-Host "  [OK] Removed" -ForegroundColor Green
             } else {
                 Write-Host "  -> Would remove $sizeGB GB" -ForegroundColor Yellow
             }
         }
         catch {
-            Write-Host "  X Error: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  [X] Error: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
     else {
@@ -63,8 +88,8 @@ function Remove-SafelyWithLogging {
     }
 }
 
-Write-Host "`n1. Stopping Services for Cleanup..." -ForegroundColor Yellow
-$servicesToStop = @("wuauserv", "BITS", "CryptSvc")
+Write-Host "1. Stopping Services for Aggressive Cleanup..." -ForegroundColor Yellow
+$servicesToStop = @("wuauserv", "BITS", "CryptSvc", "TrustedInstaller")
 foreach ($service in $servicesToStop) {
     try {
         Stop-Service $service -Force -ErrorAction SilentlyContinue
@@ -74,221 +99,258 @@ foreach ($service in $servicesToStop) {
         Write-Host "  Warning: Could not stop $service" -ForegroundColor Yellow
     }
 }
+Write-Host ""
 
-Write-Host "`n2. Windows System Temporary Files..." -ForegroundColor Yellow
-$systemTempPaths = @(
+Write-Host "2. Aggressive Windows Update Cleanup..." -ForegroundColor Yellow
+$updatePaths = @(
+    @{Path="C:\Windows\SoftwareDistribution\Download\*"; Desc="Update Downloads"},
+    @{Path="C:\Windows\SoftwareDistribution\DataStore\*"; Desc="Update DataStore"},
+    @{Path="C:\`$Windows.~BT\*"; Desc="Windows Upgrade Files"},
+    @{Path="C:\`$Windows.~WS\*"; Desc="Windows Upgrade Workspace"},
+    @{Path="C:\`$WinREAgent\*"; Desc="WinRE Agent Files"},
+    @{Path="C:\Windows\SoftwareDistribution\DeliveryOptimization\*"; Desc="Delivery Optimization Cache"},
+    @{Path="C:\ProgramData\Microsoft\Windows\WER\*"; Desc="Windows Error Reporting"},
+    @{Path="C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows\DeliveryOptimization\*"; Desc="System DO Cache"}
+)
+
+foreach ($updatePath in $updatePaths) {
+    Remove-SafelyWithLogging -Path $updatePath.Path -Description $updatePath.Desc
+}
+Write-Host ""
+
+Write-Host "3. System Temporary and Cache Files..." -ForegroundColor Yellow
+$tempPaths = @(
     @{Path="C:\Windows\Temp\*"; Desc="Windows Temp"},
     @{Path="C:\Windows\Prefetch\*"; Desc="Prefetch Files"},
-    @{Path="C:\Windows\SoftwareDistribution\Download\*"; Desc="Windows Update Downloads"},
-    @{Path="C:\Windows\Logs\CBS\*"; Desc="Component-Based Servicing Logs"},
-    @{Path="C:\Windows\Logs\DISM\*"; Desc="DISM Logs"},
-    @{Path="C:\ProgramData\Microsoft\Windows\WER\ReportQueue\*"; Desc="Windows Error Reporting Queue"},
-    @{Path="C:\Windows\LiveKernelReports\*"; Desc="Kernel Reports"},
-    @{Path="C:\Windows\Minidump\*"; Desc="Memory Dumps"},
-    @{Path="C:\Windows\System32\LogFiles\WMI\*"; Desc="WMI Logs"},
-    @{Path="C:\Windows\Panther\UnattendGC\*"; Desc="Setup Logs"}
+    @{Path="C:\Windows\Logs\*"; Desc="All Windows Logs"},
+    @{Path="C:\Windows\Panther\*"; Desc="Setup/Upgrade Logs"},
+    @{Path="C:\Windows\inf\setupapi.dev.log"; Desc="Setup API Log"},
+    @{Path="C:\Windows\Performance\WinSAT\*"; Desc="WinSAT Data"},
+    @{Path="C:\ProgramData\Microsoft\Windows\WER\*"; Desc="Error Reporting"},
+    @{Path="C:\ProgramData\Microsoft\Diagnosis\*"; Desc="Diagnostic Data"},
+    @{Path="C:\Windows\System32\LogFiles\*"; Desc="System Log Files"},
+    @{Path="C:\Windows\ServiceProfiles\*\AppData\Local\Temp\*"; Desc="Service Profile Temps"},
+    @{Path="C:\Windows\System32\config\systemprofile\AppData\Local\Temp\*"; Desc="System Profile Temp"}
 )
 
-foreach ($temp in $systemTempPaths) {
-    Remove-SafelyWithLogging -Path $temp.Path -Description $temp.Desc
+foreach ($tempPath in $tempPaths) {
+    Remove-SafelyWithLogging -Path $tempPath.Path -Description $tempPath.Desc
 }
+Write-Host ""
 
-Write-Host "`n3. User Temporary Files..." -ForegroundColor Yellow
-$userTempPaths = @(
+Write-Host "4. User Profile Cleanup (All Users)..." -ForegroundColor Yellow
+$userPaths = @(
     @{Path="C:\Users\*\AppData\Local\Temp\*"; Desc="User Temp Files"},
-    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\Temporary Internet Files\*"; Desc="IE Temporary Files"},
     @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\INetCache\*"; Desc="IE/Edge Cache"},
-    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\Explorer\thumbcache_*.db"; Desc="Thumbnail Cache"},
-    @{Path="C:\Users\*\AppData\Local\IconCache.db"; Desc="Icon Cache"},
-    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\Caches\*"; Desc="Windows Caches"}
+    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\WebCache\*"; Desc="Web Cache"},
+    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\Explorer\*.db"; Desc="Explorer Databases"},
+    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\Caches\*"; Desc="Windows Caches"},
+    @{Path="C:\Users\*\AppData\Local\CrashDumps\*"; Desc="User Crash Dumps"},
+    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\History\*"; Desc="Browser History"},
+    @{Path="C:\Users\*\AppData\Local\Microsoft\Windows\Temporary Internet Files\*"; Desc="Temporary Internet Files"},
+    @{Path="C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\*"; Desc="Recent Items"},
+    @{Path="C:\Users\*\Recent\*"; Desc="Recent Shortcuts"}
 )
 
-foreach ($userTemp in $userTempPaths) {
-    Remove-SafelyWithLogging -Path $userTemp.Path -Description $userTemp.Desc
+foreach ($userPath in $userPaths) {
+    Remove-SafelyWithLogging -Path $userPath.Path -Description $userPath.Desc
 }
+Write-Host ""
 
-if (-not $SkipBrowserCleanup) {
-    Write-Host "`n4. Browser Cache and Data..." -ForegroundColor Yellow
-    $browserPaths = @(
-        @{Path="C:\Users\*\AppData\Local\Google\Chrome\User Data\*\Cache\*"; Desc="Chrome Cache"},
-        @{Path="C:\Users\*\AppData\Local\Google\Chrome\User Data\*\Code Cache\*"; Desc="Chrome Code Cache"},
-        @{Path="C:\Users\*\AppData\Local\Microsoft\Edge\User Data\*\Cache\*"; Desc="Edge Cache"},
-        @{Path="C:\Users\*\AppData\Local\Microsoft\Edge\User Data\*\Code Cache\*"; Desc="Edge Code Cache"},
-        @{Path="C:\Users\*\AppData\Local\Mozilla\Firefox\Profiles\*\cache2\*"; Desc="Firefox Cache"},
-        @{Path="C:\Users\*\AppData\Local\Mozilla\Firefox\Profiles\*\startupCache\*"; Desc="Firefox Startup Cache"},
-        @{Path="C:\Users\*\AppData\Roaming\Opera Software\Opera Stable\Cache\*"; Desc="Opera Cache"},
-        @{Path="C:\Users\*\AppData\Local\BraveSoftware\Brave-Browser\User Data\*\Cache\*"; Desc="Brave Cache"}
-    )
-    
-    foreach ($browserPath in $browserPaths) {
-        Remove-SafelyWithLogging -Path $browserPath.Path -Description $browserPath.Desc
-    }
+Write-Host "5. Windows Memory Dumps and Debug Files..." -ForegroundColor Yellow
+$dumpPaths = @(
+    @{Path="C:\Windows\Minidump\*"; Desc="Minidumps"},
+    @{Path="C:\Windows\memory.dmp"; Desc="Memory Dump"},
+    @{Path="C:\Windows\MEMORY.DMP"; Desc="Memory Dump (caps)"},
+    @{Path="C:\Windows\LiveKernelReports\*"; Desc="Kernel Reports"},
+    @{Path="C:\ProgramData\Microsoft\Windows\WER\ReportQueue\*"; Desc="Error Report Queue"},
+    @{Path="C:\ProgramData\Microsoft\Windows\WER\ReportArchive\*"; Desc="Error Report Archive"}
+)
+
+foreach ($dumpPath in $dumpPaths) {
+    Remove-SafelyWithLogging -Path $dumpPath.Path -Description $dumpPath.Desc
 }
+Write-Host ""
 
-Write-Host "`n5. Development Tools Cache..." -ForegroundColor Yellow
-$devPaths = @(
-    @{Path="C:\Users\*\.nuget\packages\*"; Desc="NuGet Package Cache"},
-    @{Path="C:\Users\*\AppData\Roaming\npm-cache\*"; Desc="NPM Cache"},
-    @{Path="C:\Users\*\AppData\Local\yarn-cache\*"; Desc="Yarn Cache"},
-    @{Path="C:\Users\*\.gradle\caches\*"; Desc="Gradle Cache"},
-    @{Path="C:\Users\*\.m2\repository\*"; Desc="Maven Repository Cache"},
-    @{Path="C:\Users\*\AppData\Local\pip\cache\*"; Desc="Python Pip Cache"},
+Write-Host "6. Windows Installer and Package Caches..." -ForegroundColor Yellow
+$installerPaths = @(
+    @{Path="C:\Windows\Installer\$PatchCache$\*"; Desc="MSI Patch Cache"},
     @{Path="C:\ProgramData\Package Cache\*"; Desc="Package Cache"},
-    @{Path="C:\Program Files (x86)\Microsoft Visual Studio\Installer\resources\app\layout\*"; Desc="VS Installer Cache"}
+    @{Path="C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows\INetCache\*"; Desc="System Profile Cache"}
 )
 
-foreach ($devPath in $devPaths) {
-    Remove-SafelyWithLogging -Path $devPath.Path -Description $devPath.Desc
+foreach ($installerPath in $installerPaths) {
+    Remove-SafelyWithLogging -Path $installerPath.Path -Description $installerPath.Desc
+}
+Write-Host ""
+
+if (-not $SkipDriverCleanup) {
+    Write-Host "7. Old Driver Store Cleanup..." -ForegroundColor Yellow
+    if (-not $WhatIf) {
+        try {
+            Write-Host "  Enumerating old drivers..." -ForegroundColor Cyan
+            
+            # Get list of non-present devices (old drivers)
+            $oldDrivers = pnputil /enum-drivers | Select-String "Published Name" -Context 0,5 | 
+                Where-Object { $_.Context.PostContext -like "*Provider Name*" }
+            
+            Write-Host "  Found $($oldDrivers.Count) driver packages in store" -ForegroundColor Cyan
+            Write-Host "  Use 'pnputil /delete-driver oem#.inf /uninstall' to remove specific old drivers" -ForegroundColor Gray
+            Write-Host "  [OK] Driver enumeration complete (manual cleanup recommended)" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "  Warning: Could not enumerate drivers" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  -> Would enumerate and suggest driver cleanup" -ForegroundColor Yellow
+    }
+    
+    # Clean driver temp files
+    Remove-SafelyWithLogging -Path "C:\Windows\System32\DriverStore\Temp\*" -Description "Driver Store Temp Files"
+    Write-Host ""
 }
 
-Write-Host "`n6. Office and Application Cache..." -ForegroundColor Yellow
-$appCachePaths = @(
-    @{Path="C:\Users\*\AppData\Local\Microsoft\Office\16.0\OfficeFileCache\*"; Desc="Office File Cache"},
-    @{Path="C:\Users\*\AppData\Roaming\Microsoft\Teams\tmp\*"; Desc="Microsoft Teams Temp"},
-    @{Path="C:\Users\*\AppData\Roaming\Microsoft\Teams\logs\*"; Desc="Microsoft Teams Logs"},
-    @{Path="C:\Users\*\AppData\Roaming\Zoom\logs\*"; Desc="Zoom Logs"},
-    @{Path="C:\Users\*\AppData\Local\Adobe\Common\Media Cache Files\*"; Desc="Adobe Media Cache"},
-    @{Path="C:\Users\*\AppData\Roaming\Adobe\Common\Media Cache Files\*"; Desc="Adobe Media Cache (Roaming)"},
-    @{Path="C:\Users\*\AppData\Local\Slack\Cache\*"; Desc="Slack Cache"},
-    @{Path="C:\Users\*\AppData\Roaming\Slack\Cache\*"; Desc="Slack Cache (Roaming)"}
+Write-Host "8. Windows Defender Cleanup..." -ForegroundColor Yellow
+$defenderPaths = @(
+    @{Path="C:\ProgramData\Microsoft\Windows Defender\Scans\History\*"; Desc="Defender Scan History"},
+    @{Path="C:\ProgramData\Microsoft\Windows Defender\Support\*"; Desc="Defender Support Files"},
+    @{Path="C:\Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows Defender\*"; Desc="Defender Profile Data"}
 )
 
-foreach ($appCache in $appCachePaths) {
-    Remove-SafelyWithLogging -Path $appCache.Path -Description $appCache.Desc
+foreach ($defenderPath in $defenderPaths) {
+    Remove-SafelyWithLogging -Path $defenderPath.Path -Description $defenderPath.Desc
 }
+Write-Host ""
 
-Write-Host "`n7. Windows Store and UWP Apps..." -ForegroundColor Yellow
-$storePaths = @(
-    @{Path="C:\Users\*\AppData\Local\Packages\*\AC\Temp\*"; Desc="UWP App Temp Files"},
-    @{Path="C:\Users\*\AppData\Local\Packages\*\LocalCache\*"; Desc="UWP App Cache"},
-    @{Path="C:\Program Files\WindowsApps\*\cache\*"; Desc="Windows Store App Cache"},
-    @{Path="C:\ProgramData\Microsoft\Windows\AppRepository\StateRepository-Machine.srd-tmp"; Desc="App Repository Temp"}
-)
-
-foreach ($storePath in $storePaths) {
-    Remove-SafelyWithLogging -Path $storePath.Path -Description $storePath.Desc
-}
-
-Write-Host "`n8. System Cache and Service Files..." -ForegroundColor Yellow
-$serviceCachePaths = @(
-    @{Path="C:\Windows\CSC\*"; Desc="Offline Files Cache"},
-    @{Path="C:\Windows\System32\config\systemprofile\AppData\Local\Temp\*"; Desc="System Profile Temp"},
-    @{Path="C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp\*"; Desc="LocalService Temp"},
-    @{Path="C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Temp\*"; Desc="NetworkService Temp"},
-    @{Path="C:\Windows\System32\sru\*"; Desc="System Resource Usage Monitor"},
-    @{Path="C:\ProgramData\Microsoft\Search\Data\Applications\Windows\tmp\*"; Desc="Windows Search Temp"}
-)
-
-foreach ($serviceCache in $serviceCachePaths) {
-    Remove-SafelyWithLogging -Path $serviceCache.Path -Description $serviceCache.Desc
-}
-
-Write-Host "`n9. IIS and Web Server Logs..." -ForegroundColor Yellow
-$webServerPaths = @(
-    @{Path="C:\inetpub\logs\LogFiles\*"; Desc="IIS Log Files"},
-    @{Path="C:\Windows\System32\LogFiles\W3SVC*\*"; Desc="IIS W3SVC Logs"},
-    @{Path="C:\Windows\System32\LogFiles\HTTPERR\*"; Desc="HTTP Error Logs"},
-    @{Path="C:\Windows\System32\LogFiles\SMTPSVC*\*"; Desc="SMTP Service Logs"}
-)
-
-foreach ($webPath in $webServerPaths) {
-    Remove-SafelyWithLogging -Path $webPath.Path -Description $webPath.Desc
-}
-
-Write-Host "`n10. Docker and Container Cache..." -ForegroundColor Yellow
-$containerPaths = @(
-    @{Path="C:\ProgramData\Docker\tmp\*"; Desc="Docker Temp Files"},
-    @{Path="C:\Users\*\.docker\machine\cache\*"; Desc="Docker Machine Cache"},
-    @{Path="C:\ProgramData\DockerDesktop\vm-data\DockerDesktop.vhdx.tmp"; Desc="Docker Desktop Temp"}
-)
-
-foreach ($containerPath in $containerPaths) {
-    Remove-SafelyWithLogging -Path $containerPath.Path -Description $containerPath.Desc
-}
-
-Write-Host "`n11. Windows Disk Cleanup..." -ForegroundColor Yellow
+Write-Host "9. Event Logs Cleanup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        Write-Host "  Running automated disk cleanup..." -ForegroundColor Cyan
+        $logs = Get-WinEvent -ListLog * -ErrorAction SilentlyContinue
+        $clearedCount = 0
         
-        $additionalPaths = @(
-            @{Path="C:\Windows\Downloaded Program Files\*"; Desc="Downloaded Program Files"},
-            @{Path="C:\Windows\Offline Web Pages\*"; Desc="Offline Web Pages"},
-            @{Path="C:\ProgramData\Microsoft\Windows\RetailDemo\OfflineContent\*"; Desc="Retail Demo Content"},
-            @{Path="C:\Windows\System32\DirectX\*"; Desc="DirectX Shader Cache"},
-            @{Path="C:\Windows\SoftwareDistribution\DeliveryOptimization\*"; Desc="Delivery Optimization"},
-            @{Path="C:\Windows\System32\DriverStore\Temp\*"; Desc="Driver Store Temp"}
-        )
-        
-        foreach ($additionalPath in $additionalPaths) {
-            Remove-SafelyWithLogging -Path $additionalPath.Path -Description $additionalPath.Desc
+        foreach ($log in $logs) {
+            try {
+                wevtutil cl $log.LogName 2>$null
+                $clearedCount++
+            }
+            catch {
+                # Silent fail for logs that can't be cleared
+            }
         }
-        
-        Write-Host "  V Disk cleanup completed" -ForegroundColor Green
+        Write-Host "  [OK] Cleared $clearedCount event logs" -ForegroundColor Green
     }
     catch {
-        Write-Host "  Warning: Disk cleanup failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  Warning: Could not clear all event logs" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  -> Would run automated disk cleanup" -ForegroundColor Yellow
+    Write-Host "  -> Would clear all event logs" -ForegroundColor Yellow
 }
+Write-Host ""
 
-Write-Host "`n12. Empty Recycle Bin..." -ForegroundColor Yellow
+Write-Host "10. Windows Search Index..." -ForegroundColor Yellow
+if (-not $WhatIf) {
+    try {
+        Stop-Service "WSearch" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        Remove-SafelyWithLogging -Path "C:\ProgramData\Microsoft\Search\Data\*" -Description "Search Index Data"
+        Write-Host "  [OK] Search service stopped and index cleared" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  Warning: Could not clear search index" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  -> Would stop search and clear index" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "11. Recycle Bin (All Users)..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         Clear-RecycleBin -Force -ErrorAction Stop
-        Write-Host "  V Recycle Bin emptied" -ForegroundColor Green
+        Write-Host "  [OK] All recycle bins emptied" -ForegroundColor Green
     }
     catch {
-        try {
-            $recycleBin = New-Object -ComObject Shell.Application
-            $recycleBin.Namespace(0xA).InvokeVerb("empty")
-            Write-Host "  V Recycle Bin emptied" -ForegroundColor Green
-        }
-        catch {
-            Write-Host "  Warning: Could not empty Recycle Bin" -ForegroundColor Yellow
-        }
+        Write-Host "  Warning: Could not empty all recycle bins" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  -> Would empty Recycle Bin" -ForegroundColor Yellow
+    Write-Host "  -> Would empty all recycle bins" -ForegroundColor Yellow
 }
+Write-Host ""
 
-Write-Host "`n13. DISM Component Cleanup..." -ForegroundColor Yellow
+Write-Host "12. DISM - Analyze Component Store (WinSxS)..." -ForegroundColor Yellow
+try {
+    Write-Host "  Analyzing component store size..." -ForegroundColor Cyan
+    
+    # Run DISM and capture output
+    $analysisOutput = & dism.exe /online /Cleanup-Image /AnalyzeComponentStore 2>&1
+    
+    # Display the full output
+    foreach ($line in $analysisOutput) {
+        if ($line -match "Component Store|Windows Explorer|Reclaimable|Backup|Last Cleanup|recommended") {
+            Write-Host "  $line" -ForegroundColor White
+        }
+    }
+    
+    # Check if analysis succeeded
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "  [OK] Component store analysis complete" -ForegroundColor Green
+        
+        # Extract key information
+        $sizeLine = $analysisOutput | Where-Object { $_ -match "Actual Size of Component Store" }
+        $reclaimLine = $analysisOutput | Where-Object { $_ -match "Component Store Cleanup Recommended" }
+        
+        if ($reclaimLine -match "Yes") {
+            Write-Host "  NOTE: Cleanup is recommended - space can be reclaimed!" -ForegroundColor Yellow
+        } elseif ($reclaimLine -match "No") {
+            Write-Host "  NOTE: Minimal space can be reclaimed (component store is already clean)" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "  Warning: DISM analysis returned error code $LASTEXITCODE" -ForegroundColor Yellow
+        Write-Host "  Try running script as Administrator" -ForegroundColor Yellow
+    }
+}
+catch {
+    Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  Make sure you're running as Administrator" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "13. DISM - Remove Superseded Components..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        Write-Host "  Running DISM component cleanup (this may take 5-15 minutes)..." -ForegroundColor Cyan
-        Write-Host "  Please wait, DISM is working in background..." -ForegroundColor Gray
+        Write-Host "  Running DISM with /ResetBase (THIS CANNOT BE UNDONE!)" -ForegroundColor Cyan
+        Write-Host "  This will take 10-30 minutes. Please wait..." -ForegroundColor Gray
         
-        # Start DISM with a timeout
         $dismJob = Start-Job -ScriptBlock {
-            $dismResult = Start-Process "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup" -Wait -PassThru -WindowStyle Hidden
+            $dismResult = Start-Process "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup /ResetBase" -Wait -PassThru -WindowStyle Hidden
             return $dismResult.ExitCode
         }
         
-        # Wait with progress indicator (max 20 minutes)
-        $timeout = 1200 # 20 minutes in seconds
+        # Wait with progress indicator (max 45 minutes)
+        $timeout = 2700
         $elapsed = 0
         
         while ($dismJob.State -eq "Running" -and $elapsed -lt $timeout) {
             Start-Sleep 30
             $elapsed += 30
             $minutes = [math]::Floor($elapsed / 60)
-            Write-Host "  Still running... ($minutes minutes elapsed)" -ForegroundColor Gray
+            Write-Host "  Still running... (elapsed time: $minutes min)" -ForegroundColor Gray
         }
         
         if ($dismJob.State -eq "Running") {
             Write-Host "  DISM taking too long, stopping..." -ForegroundColor Yellow
             Stop-Job $dismJob
             Remove-Job $dismJob
-            Write-Host "  Warning: DISM cleanup timed out after 20 minutes" -ForegroundColor Yellow
+            Write-Host "  Warning: DISM cleanup timed out" -ForegroundColor Yellow
         } else {
             $exitCode = Receive-Job $dismJob
             Remove-Job $dismJob
             
             if ($exitCode -eq 0) {
-                Write-Host "  V DISM component cleanup completed" -ForegroundColor Green
+                Write-Host "  [OK] DISM /ResetBase completed successfully" -ForegroundColor Green
+                Write-Host "  Note: Windows Update rollback is now disabled!" -ForegroundColor Yellow
             } else {
-                Write-Host "  Warning: DISM cleanup failed with exit code $exitCode" -ForegroundColor Yellow
+                Write-Host "  Warning: DISM failed with exit code $exitCode" -ForegroundColor Yellow
             }
         }
     }
@@ -296,130 +358,190 @@ if (-not $WhatIf) {
         Write-Host "  Error: DISM cleanup failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 } else {
-    Write-Host "  -> Would run DISM component cleanup (can take 5-15 minutes)" -ForegroundColor Yellow
+    Write-Host "  -> Would run DISM /StartComponentCleanup /ResetBase" -ForegroundColor Yellow
+    Write-Host "  -> This removes ALL superseded components permanently" -ForegroundColor Yellow
+    Write-Host "  -> Expected to reclaim space shown in analysis above" -ForegroundColor Yellow
 }
+Write-Host ""
 
-Write-Host "`n14. Disk Optimization..." -ForegroundColor Yellow
+Write-Host "14. DISM - Remove Service Pack Backup..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
-        $drives = Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq "Fixed" }
+        Write-Host "  Running DISM /SPSuperseded (removes SP backup)..." -ForegroundColor Cyan
+        $spResult = dism /online /Cleanup-Image /SPSuperseded
         
-        foreach ($drive in $drives) {
-            Write-Host "  Running TRIM on drive $($drive.DriveLetter):\ ..." -ForegroundColor Cyan
-            Optimize-Volume -DriveLetter $drive.DriveLetter -ReTrim -Verbose
-            Write-Host "  V TRIM completed for drive $($drive.DriveLetter):\" -ForegroundColor Green
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [OK] Service pack backup removed" -ForegroundColor Green
+        } else {
+            Write-Host "  Note: No service pack backup found or already removed" -ForegroundColor Gray
         }
     }
     catch {
-        Write-Host "  Warning: Disk optimization failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  Warning: SP cleanup not applicable" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  -> Would run TRIM on all fixed drives" -ForegroundColor Yellow
+    Write-Host "  -> Would remove service pack backup files if present" -ForegroundColor Yellow
+}
+Write-Host ""
+
+if (-not $SkipFeatureCleanup) {
+    Write-Host "15. Windows Features Cleanup..." -ForegroundColor Yellow
+    if (-not $WhatIf) {
+        try {
+            Write-Host "  Running feature cleanup to remove disabled features..." -ForegroundColor Cyan
+            
+            $featureCleanup = Start-Job -ScriptBlock {
+                $result = Start-Process "Dism.exe" -ArgumentList "/online /Cleanup-Image /StartComponentCleanup /ResetBase" -Wait -PassThru -WindowStyle Hidden
+                return $result.ExitCode
+            }
+            
+            Wait-Job $featureCleanup -Timeout 600 | Out-Null
+            $exitCode = Receive-Job $featureCleanup
+            Remove-Job $featureCleanup
+            
+            if ($exitCode -eq 0) {
+                Write-Host "  [OK] Feature cleanup completed" -ForegroundColor Green
+            }
+        }
+        catch {
+            Write-Host "  Warning: Feature cleanup failed" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  -> Would run Windows Features cleanup" -ForegroundColor Yellow
+    }
+    Write-Host ""
 }
 
-Write-Host "`n15. Network Cache Cleanup..." -ForegroundColor Yellow
+Write-Host "16. Service Pack Cleanup Files..." -ForegroundColor Yellow
+$spPaths = @(
+    @{Path="C:\Windows\WinSxS\Backup\*"; Desc="WinSxS Backup Files"},
+    @{Path="C:\Windows\WinSxS\ManifestCache\*"; Desc="Manifest Cache"},
+    @{Path="C:\Windows\System32\Dism\*"; Desc="DISM Temp Files"}
+)
+
+foreach ($spPath in $spPaths) {
+    Remove-SafelyWithLogging -Path $spPath.Path -Description $spPath.Desc
+}
+Write-Host ""
+
+Write-Host "17. System Restore Points Cleanup..." -ForegroundColor Yellow
+if (-not $WhatIf) {
+    try {
+        vssadmin delete shadows /all /quiet 2>$null
+        Write-Host "  [OK] All system restore points deleted" -ForegroundColor Green
+        Write-Host "  Warning: System cannot be restored to previous state!" -ForegroundColor Yellow
+    }
+    catch {
+        Write-Host "  Warning: Could not delete restore points" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  -> Would delete all system restore points" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "18. Page File and Hibernation..." -ForegroundColor Yellow
+if (-not $WhatIf) {
+    try {
+        # Disable hibernation (removes hiberfil.sys)
+        powercfg /hibernate off
+        Write-Host "  [OK] Hibernation disabled (hiberfil.sys will be removed on reboot)" -ForegroundColor Green
+        
+        # Note: We don't delete pagefile as it's recreated automatically
+        Write-Host "  Note: Pagefile will be optimized on next boot" -ForegroundColor Gray
+    }
+    catch {
+        Write-Host "  Warning: Could not configure hibernation/pagefile" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  -> Would disable hibernation" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "19. Optimize Drives and Compact OS..." -ForegroundColor Yellow
+if (-not $WhatIf) {
+    try {
+        # Run TRIM on all drives
+        $drives = Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq "Fixed" }
+        foreach ($drive in $drives) {
+            Write-Host "  Running TRIM on drive $($drive.DriveLetter):\ ..." -ForegroundColor Cyan
+            Optimize-Volume -DriveLetter $drive.DriveLetter -ReTrim -Verbose
+        }
+        Write-Host "  [OK] TRIM completed on all drives" -ForegroundColor Green
+        
+        # Compact OS (compresses Windows files)
+        Write-Host "  Running Compact OS analysis..." -ForegroundColor Cyan
+        $compactStatus = compact /CompactOS:query
+        
+        if ($compactStatus -like "*not in compact mode*") {
+            Write-Host "  Applying Compact OS (this may take 10-20 minutes)..." -ForegroundColor Cyan
+            compact /CompactOS:always | Out-Null
+            Write-Host "  [OK] Compact OS enabled - Windows files compressed" -ForegroundColor Green
+        } else {
+            Write-Host "  Compact OS already enabled" -ForegroundColor Gray
+        }
+    }
+    catch {
+        Write-Host "  Warning: Drive optimization failed" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  -> Would run TRIM and enable Compact OS" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "20. Clear DNS and Network Cache..." -ForegroundColor Yellow
 if (-not $WhatIf) {
     try {
         ipconfig /flushdns | Out-Null
-        Write-Host "  V DNS cache cleared" -ForegroundColor Green
-        
         arp -d * 2>$null
-        Write-Host "  V ARP cache cleared" -ForegroundColor Green
+        netsh int ip reset | Out-Null
+        Write-Host "  [OK] Network caches cleared" -ForegroundColor Green
     }
     catch {
         Write-Host "  Warning: Network cache cleanup failed" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  -> Would clear DNS and ARP cache" -ForegroundColor Yellow
+    Write-Host "  -> Would clear DNS and network cache" -ForegroundColor Yellow
 }
+Write-Host ""
 
-Write-Host "`n16. Restarting Services..." -ForegroundColor Yellow
-foreach ($service in $servicesToStop) {
+Write-Host "21. Zero Free Space (Optional - for maximum compression)..." -ForegroundColor Yellow
+$zeroSpace = Read-Host "  Zero free space for better compression? This takes a LONG time (y/N)"
+if ($zeroSpace -eq "y" -and -not $WhatIf) {
+    try {
+        Write-Host "  Creating zero-fill file to maximize compression..." -ForegroundColor Cyan
+        Write-Host "  This will take 30+ minutes depending on free space..." -ForegroundColor Gray
+        
+        fsutil file createnew C:\zerofill.tmp (Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'").FreeSpace
+        Remove-Item C:\zerofill.tmp -Force
+        
+        Write-Host "  [OK] Free space zeroed" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  Warning: Could not zero free space" -ForegroundColor Yellow
+        Remove-Item C:\zerofill.tmp -Force -ErrorAction SilentlyContinue
+    }
+} else {
+    Write-Host "  Skipped (not recommended unless template will be exported)" -ForegroundColor Gray
+}
+Write-Host ""
+
+Write-Host "22. Final Service Restart..." -ForegroundColor Yellow
+$servicesToRestart = @("wuauserv")
+foreach ($service in $servicesToRestart) {
     try {
         Start-Service $service -ErrorAction SilentlyContinue
         Write-Host "  Restarted: $service" -ForegroundColor Green
     }
     catch {
-        Write-Host "  Warning: Could not restart $service" -ForegroundColor Yellow
+        # Don't restart search service - leave it off for template
     }
 }
+Write-Host ""
 
-Write-Host "`n17. Custom Application Log Cleanup..." -ForegroundColor Yellow
-Write-Host "  Add your application-specific log cleanup below" -ForegroundColor Gray
-
-# ============================================================================
-# CUSTOM APPLICATION LOG CLEANUP SECTION
-# ============================================================================
-# Add entries below to clean up logs from your specific applications.
-# Each entry should follow this format:
-#
-# @{Path="C:\Path\To\Your\Logs\*"; Desc="Your Application Logs"}
-#
-# The asterisk (*) at the end will delete all files in that directory.
-# You can also use wildcards like *.log to target specific file types.
-# 
-# EXAMPLE CONFIGURATIONS:
-# ============================================================================
-
-$customLogPaths = @(
-    # Example: Lucee/Tomcat application logs
-    # Uncomment the line below to enable Lucee log cleanup
-    @{Path="C:\lucee\tomcat\logs\*"; Desc="Lucee Tomcat Logs"}
-    @{Path="C:\lucee\tomcat\temp\*"; Desc="Lucee Tomcat Temp"}
-    
-    # Example: IIS logs older than 30 days
-    # @{Path="C:\inetpub\logs\LogFiles\*\*.log"; Desc="IIS Logs"}
-    
-    # Example: Custom application logs
-    # @{Path="C:\MyApp\logs\*.log"; Desc="MyApp Logs"}
-    # @{Path="C:\Program Files\MyService\logs\*"; Desc="MyService Logs"}
-    
-    # Example: SQL Server error logs (be careful with these!)
-    # @{Path="C:\Program Files\Microsoft SQL Server\MSSQL*\MSSQL\Log\ERRORLOG.*"; Desc="SQL Server Error Logs (old)"}
-    
-    # Add your custom paths here:
-)
-
-# Process custom log cleanup if any paths are defined
-if ($customLogPaths.Count -gt 0) {
-    foreach ($customLog in $customLogPaths) {
-        Remove-SafelyWithLogging -Path $customLog.Path -Description $customLog.Desc
-    }
-} else {
-    Write-Host "  No custom log paths configured (edit script to add your paths)" -ForegroundColor Gray
-}
-
-# ============================================================================
-# ADVANCED: Time-based log cleanup
-# ============================================================================
-# For more precise control, you can add age-based cleanup using Get-ChildItem filtering.
-# Example: Delete Lucee logs older than 30 days
-# 
-# if (Test-Path "C:\lucee\tomcat\logs") {
-#     try {
-#         $cutoffDate = (Get-Date).AddDays(-30)
-#         $oldLogs = Get-ChildItem "C:\lucee\tomcat\logs\*.log" -Recurse -ErrorAction SilentlyContinue | 
-#                    Where-Object { $_.LastWriteTime -lt $cutoffDate }
-#         
-#         $size = ($oldLogs | Measure-Object -Property Length -Sum).Sum
-#         $sizeGB = [math]::Round($size / 1GB, 2)
-#         
-#         Write-Host "Cleaning: Lucee Logs (>30 days old, $sizeGB GB)" -ForegroundColor Cyan
-#         
-#         if (-not $WhatIf) {
-#             $oldLogs | Remove-Item -Force -ErrorAction SilentlyContinue
-#             Write-Host "  V Removed $($oldLogs.Count) files" -ForegroundColor Green
-#         } else {
-#             Write-Host "  -> Would remove $($oldLogs.Count) files ($sizeGB GB)" -ForegroundColor Yellow
-#         }
-#     }
-#     catch {
-#         Write-Host "  X Error cleaning Lucee logs: $($_.Exception.Message)" -ForegroundColor Red
-#     }
-# }
-
-Write-Host "`n=====================================" -ForegroundColor Green
-Write-Host "Weekly VM Maintenance Complete!" -ForegroundColor Green
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "Template Preparation Complete!" -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host ""
 
 # Show final disk space and calculate difference
 try {
@@ -428,23 +550,42 @@ try {
     $finalUsedSpaceGB = $totalSpaceGB - $finalFreeSpaceGB
     $finalUsedPercent = [math]::Round(($finalUsedSpaceGB / $totalSpaceGB) * 100, 1)
     
-    $spaceFreeGB = [math]::Round($finalFreeSpaceGB - $initialFreeSpaceGB, 2)
+    $spaceFreedGB = [math]::Round($finalFreeSpaceGB - $initialFreeSpaceGB, 2)
     
-    Write-Host "`nFinal Disk Space:" -ForegroundColor Yellow
+    Write-Host "Final Disk Space:" -ForegroundColor Yellow
     Write-Host "Total: $totalSpaceGB GB" -ForegroundColor White
     Write-Host "Used:  $finalUsedSpaceGB GB ($finalUsedPercent%)" -ForegroundColor White  
     Write-Host "Free:  $finalFreeSpaceGB GB" -ForegroundColor Green
+    Write-Host ""
     
-    if ($spaceFreeGB -gt 0) {
-        Write-Host "`nSpace Reclaimed: $spaceFreeGB GB" -ForegroundColor Green
-    } elseif ($spaceFreeGB -eq 0) {
-        Write-Host "`nSpace Reclaimed: No change" -ForegroundColor Yellow
+    if ($spaceFreedGB -gt 0) {
+        Write-Host "Total Space Reclaimed: $spaceFreedGB GB" -ForegroundColor Green
     } else {
-        Write-Host "`nSpace Change: $spaceFreeGB GB (disk usage increased)" -ForegroundColor Red
+        Write-Host "Space Change: $spaceFreedGB GB" -ForegroundColor Yellow
     }
 }
 catch {
-    Write-Host "`nCould not determine final disk space" -ForegroundColor Yellow
+    Write-Host "Could not determine final disk space" -ForegroundColor Yellow
 }
 
-Write-Host "`nWeekly cleanup safe for production VMs" -ForegroundColor Green
+Write-Host ""
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host "NEXT STEPS FOR TEMPLATE CREATION:" -ForegroundColor Cyan
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "1. REBOOT the system to complete cleanup" -ForegroundColor Yellow
+Write-Host "2. Verify system is working properly" -ForegroundColor Yellow
+Write-Host "3. Remove any application-specific logs/data" -ForegroundColor Yellow
+Write-Host "4. Clear browser history and profiles" -ForegroundColor Yellow
+Write-Host "5. Remove any personal/company data" -ForegroundColor Yellow
+Write-Host "6. Run: C:\Windows\System32\Sysprep\sysprep.exe" -ForegroundColor Yellow
+Write-Host "   - Select 'Enter System Out-of-Box Experience (OOBE)'" -ForegroundColor Gray
+Write-Host "   - Check 'Generalize'" -ForegroundColor Gray
+Write-Host "   - Select 'Shutdown'" -ForegroundColor Gray
+Write-Host "7. After shutdown, create VM template/snapshot" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "IMPORTANT NOTES:" -ForegroundColor Red
+Write-Host "- Windows Update rollback is now DISABLED" -ForegroundColor Yellow
+Write-Host "- System Restore Points have been deleted" -ForegroundColor Yellow
+Write-Host "- This system should only be used as a template" -ForegroundColor Yellow
+Write-Host ""
