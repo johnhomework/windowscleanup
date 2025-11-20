@@ -364,7 +364,8 @@ Write-Host "  Add your application-specific log cleanup below" -ForegroundColor 
 $customLogPaths = @(
     # Example: Lucee/Tomcat application logs
     # Uncomment the line below to enable Lucee log cleanup
-    # @{Path="C:\lucee\tomcat\logs\*"; Desc="Lucee Tomcat Logs"}
+    @{Path="C:\lucee\tomcat\logs\*"; Desc="Lucee Tomcat Logs"}
+    @{Path="C:\lucee\tomcat\temp\*"; Desc="Lucee Tomcat Temp"}
     
     # Example: IIS logs older than 30 days
     # @{Path="C:\inetpub\logs\LogFiles\*\*.log"; Desc="IIS Logs"}
